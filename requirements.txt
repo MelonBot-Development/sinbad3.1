@@ -1,0 +1,7 @@
+pytz
+python-dateutil
+asteval
+black
+red-discordbot
+dice
+numpy

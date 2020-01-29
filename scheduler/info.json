@@ -1,0 +1,20 @@
+{
+    "author": [
+        "mikeshardmind(Sinbad)",
+        "DiscordLiz"
+    ],
+    "install_msg": "If you need help, I have a channel in `mb85deu` (discord invite code)",
+    "name": "Scheduler",
+    "disabled": false,
+    "short": "A timezone aware scheduler cog",
+    "description": "A timezone aware scheduler cog",
+    "tags": [
+        "scheduler"
+    ],
+    "hidden": false,
+    "requirements": [
+        "python-dateutil",
+        "pytz"
+    ],
+    "min_bot_version": "3.1.8"
+}

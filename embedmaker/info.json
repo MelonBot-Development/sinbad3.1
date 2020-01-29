@@ -1,0 +1,21 @@
+{
+    "author": [
+        "mikeshardmind(Sinbad)",
+        "DiscordLiz"
+    ],
+    "install_msg": "If you need help, I have a channel in `mb85deu` (discord invite code)",
+    "name": "EmbedMaker",
+    "disabled": false,
+    "short": "Embeds",
+    "description": "",
+    "tags": [
+        "embed",
+        "embedmaker"
+    ],
+    "hidden": false,
+    "min_bot_version": "3.1.8",
+    "requirements": [
+        "python-dateutil",
+        "pytz"
+    ]
+}
