@@ -1,13 +1,14 @@
+from __future__ import annotations
+
 import asyncio
+import logging
 import string
-from typing import Optional, List, no_type_check
 from datetime import datetime
+from typing import Optional, List, Dict, Any
 
 import aiohttp
-import logging
-
-import feedparser
 import discord
+import feedparser
 
 import discordtextsanitizer as dts
 from redbot.core import commands, checks
@@ -15,9 +16,9 @@ from redbot.core.config import Config
 from redbot.core.i18n import Translator, cog_i18n
 from redbot.core.utils.chat_formatting import pagify
 
-from .cleanup import html_to_text
-from .converters import tristate  # typing: ignore
 
+from .cleanup import html_to_text
+from .converters import TriState
 
 _ = Translator("RSS", __file__)
 
@@ -50,6 +51,11 @@ USABLE_FIELDS = [
 ]
 
 
+def debug_exc_log(lg: logging.Logger, exc: Exception, msg: str = "Exception in RSS"):
+    if lg.getEffectiveLevel() <= logging.DEBUG:
+        lg.exception(msg, exc_info=exc)
+
+
 @cog_i18n(_)
 class RSS(commands.Cog):
     """
@@ -59,34 +65,47 @@ class RSS(commands.Cog):
     """
 
     __author__ = "mikeshardmind(Sinbad)"
-    __version__ = "1.0.23"
-    __flavor_text__ = "Slow responses wont kill the loop now."
+    __version__ = "330.0.1"
 
-    def __init__(self, bot):
+    def format_help_for_context(self, ctx):
+        pre_processed = super().format_help_for_context(ctx)
+        return f"{pre_processed}\nCog Version: {self.__version__}"
+
+    def __init__(self, bot, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         self.bot = bot
         self.config = Config.get_conf(
             self, identifier=78631113035100160, force_registration=True
         )
         self.config.register_channel(feeds={})
         self.session = aiohttp.ClientSession()
-        self.bg_loop_task = self.bot.loop.create_task(self.bg_loop())
+        self.bg_loop_task: Optional[asyncio.Task] = None
+
+    def init(self):
+        self.bg_loop_task = asyncio.create_task(self.bg_loop())
+
+        def done_callback(fut: asyncio.Future):
+
+            try:
+                fut.exception()
+            except asyncio.CancelledError:
+                pass
+            except asyncio.InvalidStateError as exc:
+                log.exception(
+                    "We somehow have a done callback when not done?", exc_info=exc
+                )
+            except Exception as exc:
+                log.exception("Unexpected exception in rss: ", exc_info=exc)
+
+        self.bg_loop_task.add_done_callback(done_callback)
 
     def cog_unload(self):
-        self.bg_loop_task.cancel()
-        self.session.detach()
+        if self.bg_loop_task:
+            self.bg_loop_task.cancel()
+        asyncio.create_task(self.session.close())
 
-    __del__ = cog_unload
-
-    def clear_feed(self, channel, feedname):
-        """
-        This is abuse.
-        """
-        return self.config.channel(channel).clear_raw("feeds", feedname)
-
-    async def should_embed(self, guild: discord.Guild) -> bool:
-        ret: bool = await self.bot.db.guild(guild).embeds()
-        if ret is None:
-            ret = await self.bot.db.embeds()
+    async def should_embed(self, channel: discord.TextChannel) -> bool:
+        ret: bool = await self.bot.embed_requested(channel, channel.guild.me)
         return ret
 
     async def fetch_feed(self, url: str) -> Optional[feedparser.FeedParserDict]:
@@ -97,8 +116,10 @@ class RSS(commands.Cog):
         except (aiohttp.ClientError, asyncio.TimeoutError):
             return None
         except Exception as exc:
-            log.debug(
-                f"Unexpected exception type {type(exc)} encountered for feed url: {url}"
+            debug_exc_log(
+                log,
+                exc,
+                f"Unexpected exception type {type(exc)} encountered for feed url: {url}",
             )
             return None
 
@@ -119,7 +140,7 @@ class RSS(commands.Cog):
     async def format_and_send(
         self,
         *,
-        destination: discord.abc.Messageable,
+        destination: discord.TextChannel,
         response: feedparser.FeedParserDict,
         feed_settings: dict,
         embed_default: bool,
@@ -133,6 +154,8 @@ class RSS(commands.Cog):
         use_embed = feed_settings.get("embed_override", None)
         if use_embed is None:
             use_embed = embed_default
+
+        assert isinstance(response.entries, list), "mypy"  # nosec
 
         if force:
             try:
@@ -156,8 +179,8 @@ class RSS(commands.Cog):
             )
             try:
                 await self.bot.send_filtered(destination, **kwargs)
-            except discord.HTTPException:
-                continue
+            except discord.HTTPException as exc:
+                debug_exc_log(log, exc, "Exception while sending feed.")
             last_sent = list(self.process_entry_time(entry))
 
         return last_sent
@@ -184,7 +207,7 @@ class RSS(commands.Cog):
         escaped_usable_fields = {k: maybe_clean(k, v) for k, v in data.items() if v}
 
         content = template.safe_substitute(**escaped_usable_fields)
-        content = dts.preprocess_text(content, strip_html=True)
+        content = dts.sanitize_mass_mentions(content, strip_html=False, aggresive=True)
 
         if embed:
             if len(content) > 1980:
@@ -200,57 +223,77 @@ class RSS(commands.Cog):
                 content = content[:1950] + _("... (Feed data too long)")
             return {"content": content, "embed": None}
 
+    async def handle_response_from_loop(
+        self,
+        *,
+        response: Optional[feedparser.FeedParserDict],
+        channel: discord.TextChannel,
+        feed: dict,
+        should_embed: bool,
+        feed_name: str,
+    ):
+        if not response:
+            return
+        try:
+            last = await self.format_and_send(
+                destination=channel,
+                response=response,
+                feed_settings=feed,
+                embed_default=should_embed,
+            )
+        except Exception as exc:
+            debug_exc_log(log, exc)
+        else:
+            if last:
+                await self.config.channel(channel).feeds.set_raw(
+                    feed_name, "last", value=last
+                )
+
+    async def do_feeds(self):
+        feeds_fetched: Dict[str, Any] = {}
+        default_embed_settings: Dict[discord.Guild, bool] = {}
+
+        channel_data = await self.config.all_channels()
+        for channel_id, data in channel_data.items():
+
+            channel = self.bot.get_channel(channel_id)
+            if not channel:
+                continue
+            if channel.guild not in default_embed_settings:
+                should_embed = await self.should_embed(channel)
+                default_embed_settings[channel.guild] = should_embed
+            else:
+                should_embed = default_embed_settings[channel.guild]
+
+            for feed_name, feed in data["feeds"].items():
+                url = feed.get("url", None)
+                if not url:
+                    continue
+                if url in feeds_fetched:
+                    response = feeds_fetched[url]
+                else:
+                    response = await self.fetch_feed(url)
+                    feeds_fetched[url] = response
+
+                await self.handle_response_from_loop(
+                    response=response,
+                    channel=channel,
+                    feed=feed,
+                    feed_name=feed_name,
+                    should_embed=should_embed,
+                )
+
     async def bg_loop(self):
         await self.bot.wait_until_ready()
-        while self.bot.get_cog("RSS") == self:
-            feeds_fetched = {}
-            default_embed_settings = {}
-
-            channel_data = await self.config.all_channels()
-            for channel_id, data in channel_data.items():
-
-                channel = self.bot.get_channel(channel_id)
-                if not channel:
-                    continue
-                if channel.guild not in default_embed_settings:
-                    should_embed = await self.should_embed(channel.guild)
-                    default_embed_settings[channel.guild] = should_embed
-                else:
-                    should_embed = default_embed_settings[channel.guild]
-
-                for feed_name, feed in data["feeds"].items():
-                    url = feed.get("url", None)
-                    if not url:
-                        continue
-                    if url in feeds_fetched:
-                        response = feeds_fetched[url]
-                    else:
-                        response = await self.fetch_feed(url)
-                        feeds_fetched[url] = response
-
-                    if response:
-                        try:
-                            last = await self.format_and_send(
-                                destination=channel,
-                                response=response,
-                                feed_settings=feed,
-                                embed_default=should_embed,
-                            )
-                        except Exception:
-                            pass
-                        else:
-                            if last:
-                                await self.config.channel(channel).feeds.set_raw(
-                                    feed_name, "last", value=last
-                                )
-            await asyncio.sleep(300)  # TODO: configureable
+        while await asyncio.sleep(300, True):
+            await self.do_feeds()
 
     # commands go here
 
     @checks.mod_or_permissions(manage_channels=True)
     @commands.guild_only()
     @commands.group()
-    async def rss(self, ctx: commands.Context):
+    async def rss(self, ctx: commands.GuildContext):
         """
         Configuration for rss
         """
@@ -273,26 +316,29 @@ class RSS(commands.Cog):
 
         response = await self.fetch_feed(url)
 
-        should_embed = await self.should_embed(ctx.guild)
+        if response:
+            should_embed = await self.should_embed(ctx.channel)
 
-        try:
-            await self.format_and_send(
-                destination=channel,
-                response=response,
-                feed_settings=feeds[feed],
-                embed_default=should_embed,
-                force=True,
-            )
-        except Exception:
-            await ctx.send(_("There was an error with that."))
+            try:
+                await self.format_and_send(
+                    destination=channel,
+                    response=response,
+                    feed_settings=feeds[feed],
+                    embed_default=should_embed,
+                    force=True,
+                )
+            except Exception:
+                await ctx.send(_("There was an error with that."))
+            else:
+                await ctx.tick()
         else:
-            await ctx.tick()
+            await ctx.send(_("Could not fetch feed."))
 
     @commands.cooldown(3, 60, type=commands.BucketType.user)
     @rss.command()
     async def addfeed(
         self,
-        ctx: commands.Context,
+        ctx: commands.GuildContext,
         name: str,
         url: str,
         channel: Optional[discord.TextChannel] = None,
@@ -332,7 +378,7 @@ class RSS(commands.Cog):
 
     @rss.command(name="list")
     async def list_feeds(
-        self, ctx: commands.Context, channel: Optional[discord.TextChannel] = None
+        self, ctx: commands.GuildContext, channel: Optional[discord.TextChannel] = None
     ):
         """
         Lists the current feeds for the current channel, or a provided one.
@@ -341,13 +387,15 @@ class RSS(commands.Cog):
         channel = channel or ctx.channel
 
         data = await self.config.channel(channel).feeds()
+        if not data:
+            return await ctx.send("No feeds here.")
 
         if await ctx.embed_requested():
             output = "\n".join(
-                [
+                (
                     "{name}: {url}".format(name=k, url=v.get("url", "broken feed"))
                     for k, v in data.items()
-                ]
+                )
             )
             for page in pagify(output):
                 await ctx.send(
@@ -357,10 +405,10 @@ class RSS(commands.Cog):
                 )
         else:
             output = "\n".join(
-                [
+                (
                     "{name}: <{url}>".format(name=k, url=v.get("url", "broken feed"))
                     for k, v in data.items()
-                ]
+                )
             )
             for page in pagify(output):
                 await ctx.send(page)
@@ -376,16 +424,25 @@ class RSS(commands.Cog):
         after this.
         """
         channel = channel or ctx.channel
-        await self.clear_feed(channel, name)
+        async with self.config.channel(channel).feeds() as feeds:
+            if name not in feeds:
+                await ctx.send(
+                    _("No feed named {feedname} in {channel}.").format(
+                        feedname=name, channel=channel.mention
+                    )
+                )
+                return
+
+            del feeds[name]
+
         await ctx.tick()
 
     @rss.command(name="embed")
-    @no_type_check
     async def set_embed(
         self,
         ctx,
-        feed: str,
-        setting: tristate,
+        name: str,
+        setting: TriState,
         channel: Optional[discord.TextChannel] = None,
     ):
         """
@@ -401,16 +458,25 @@ class RSS(commands.Cog):
         """
 
         channel = channel or ctx.channel
-        await self.config.channel(channel).set_raw(
-            "feeds", feed, "embed_override", value=setting
-        )
+
+        async with self.config.channel(channel).feeds() as feeds:
+            if name not in feeds:
+                await ctx.send(
+                    _("No feed named {feedname} in {channel}.").format(
+                        feedname=name, channel=channel.mention
+                    )
+                )
+                return
+
+            feeds[name]["embed_override"] = setting.state
+
         await ctx.tick()
 
     @rss.command(name="template")
     async def set_template(
         self,
         ctx,
-        feed,
+        name,
         channel: Optional[discord.TextChannel] = None,
         *,
         template: str = None,
@@ -450,18 +516,36 @@ class RSS(commands.Cog):
         channel = channel or ctx.channel
         template = template.replace("\\t", "\t")
         template = template.replace("\\n", "\n")
-        await self.config.channel(channel).set_raw(
-            "feeds", feed, "template", value=template
-        )
+        async with self.config.channel(channel).feeds() as feeds:
+            if name not in feeds:
+                await ctx.send(
+                    _("No feed named {feedname} in {channel}.").format(
+                        feedname=name, channel=channel.mention
+                    )
+                )
+                return
+
+            feeds[name]["template"] = template
+
         await ctx.tick()
 
     @rss.command(name="resettemplate")
     async def reset_template(
-        self, ctx, feed, channel: Optional[discord.TextChannel] = None
+        self, ctx, name, channel: Optional[discord.TextChannel] = None
     ):
         """
         Resets the template in use for a specific feed in this, or a provided channel
         """
         channel = channel or ctx.channel
-        await self.config.channel(channel).clear_raw("feeds", feed, "template")
+        async with self.config.channel(channel).feeds() as feeds:
+            if name not in feeds:
+                await ctx.send(
+                    _("No feed named {feedname} in {channel}.").format(
+                        feedname=name, channel=channel.mention
+                    )
+                )
+                return
+
+            del feeds[name]["template"]
+
         await ctx.tick()

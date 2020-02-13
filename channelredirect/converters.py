@@ -1,4 +1,6 @@
-from typing import Tuple, Union, NamedTuple
+from __future__ import annotations
+
+from typing import Union, NamedTuple
 
 from redbot.core import commands
 
@@ -16,16 +18,17 @@ class CommandConverter(NamedTuple):
 
 class CogOrCOmmand(NamedTuple):
     stype: str
-    obj: Union[commands.Command, commands.Cog]
+    obj: str
 
     @classmethod
     async def convert(cls, ctx: commands.Context, arg: str):
-        ret = ctx.bot.get_command(arg)
-        if ret:
-            return cls("command", ret.qualified_name)
-        ret = ctx.bot.get_cog(arg)
-        if ret:
-            return cls("cog", ret.__class__.__name__)
+        # mypy doesn't do type narrowing for the walrus yet
+        if com := ctx.bot.get_command(arg):
+            assert com, "mypy"  # nosec
+            return cls("command", com.qualified_name)
+        if cog := ctx.bot.get_cog(arg):
+            assert cog, "mypy"  # nosec
+            return cls("cog", cog.__class__.__name__)
         raise commands.BadArgument('Cog or Command "{arg}" not found.'.format(arg=arg))
 
 

@@ -1,7 +1,7 @@
+attrs
 pytz
 python-dateutil
-asteval
-black
 red-discordbot
 dice
-numpy
+feedparser
+discord-text-sanitizer

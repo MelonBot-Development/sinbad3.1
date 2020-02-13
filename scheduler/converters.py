@@ -1,15 +1,23 @@
+from __future__ import annotations
+
 import argparse
-from typing import Optional, Tuple
+import dataclasses
 from datetime import datetime, timedelta, timezone
-from redbot.core.commands import Context, BadArgument, Converter
+from typing import Optional, Tuple, NamedTuple
+
+from redbot.core.commands import Context, BadArgument
 
 from .time_utils import parse_time, parse_timedelta
 
 
-def non_numeric(arg: str) -> str:
-    if arg.isdigit():
-        raise BadArgument("Event names must contain at least 1 non-numeric value")
-    return arg
+class NonNumeric(NamedTuple):
+    parsed: str
+
+    @classmethod
+    async def convert(cls, context: Context, argument: str):
+        if argument.isdigit():
+            raise BadArgument("Event names must contain at least 1 non-numeric value")
+        return cls(argument)
 
 
 class NoExitParser(argparse.ArgumentParser):
@@ -17,14 +25,22 @@ class NoExitParser(argparse.ArgumentParser):
         raise BadArgument()
 
 
-class Schedule(Converter):
-    async def convert(
-        self, ctx: Context, argument: str
-    ) -> Tuple[str, datetime, Optional[timedelta]]:
+@dataclasses.dataclass()
+class Schedule:
+    start: datetime
+    command: str
+    recur: Optional[timedelta] = None
+    quiet: bool = False
+
+    def to_tuple(self) -> Tuple[str, datetime, Optional[timedelta]]:
+        return self.command, self.start, self.recur
+
+    @classmethod
+    async def convert(cls, ctx: Context, argument: str):
 
         start: datetime
-        recur: Optional[timedelta] = None
         command: Optional[str] = None
+        recur: Optional[timedelta] = None
 
         # Blame iOS smart punctuation,
         # and end users who use it for this (minor) perf loss
@@ -37,6 +53,9 @@ class Schedule(Converter):
             command = None
 
         parser = NoExitParser(description="Scheduler event parsing", add_help=False)
+        parser.add_argument(
+            "-q", "--quiet", action="store_true", dest="quiet", default=False
+        )
         parser.add_argument("--every", nargs="*", dest="every", default=[])
         if not command:
             parser.add_argument("command", nargs="*")
@@ -79,11 +98,15 @@ class Schedule(Converter):
             except Exception:
                 raise BadArgument("I couldn't understand that starting time.") from None
 
-        return command, start, recur
+        return cls(command=command, start=start, recur=recur, quiet=vals["quiet"])
 
 
-class TempMute(Converter):
-    async def convert(self, ctx: Context, argument: str) -> Tuple[str, datetime]:
+class TempMute(NamedTuple):
+    reason: Optional[str]
+    start: datetime
+
+    @classmethod
+    async def convert(cls, ctx: Context, argument: str):
 
         start: datetime
         reason: str
@@ -120,4 +143,4 @@ class TempMute(Converter):
             except Exception:
                 raise BadArgument("I couldn't understand that unmute time.") from None
 
-        return reason, start
+        return cls(reason, start)

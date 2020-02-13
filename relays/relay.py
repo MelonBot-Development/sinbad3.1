@@ -1,4 +1,7 @@
-from typing import List
+from __future__ import annotations
+
+from typing import List, Optional, cast
+
 import discord
 from redbot.core.bot import Red
 
@@ -14,6 +17,7 @@ class NwayRelay:
         for idx in self.channel_ids:
             c = self.bot.get_channel(idx)
             if c:
+                assert isinstance(c, discord.TextChannel)  # nosec
                 ret.append(c)
         return ret
 
@@ -26,6 +30,7 @@ class NwayRelay:
                 continue
             c = self.bot.get_channel(idx)
             if c:
+                assert isinstance(c, discord.TextChannel)  # nosec
                 ret.append(c)
         return ret
 
@@ -40,8 +45,12 @@ class OnewayRelay:
         self.bot: Red = bot
 
     @property
-    def source(self) -> discord.TextChannel:
-        return self.bot.get_channel(self.source_id)
+    def source(self) -> Optional[discord.TextChannel]:
+        # because of intermixed types in discord.py ...
+        return cast(
+            Optional[discord.TextChannel],  # ...this won't get much better.
+            self.bot.get_channel(self.source_id),
+        )
 
     @property
     def destinations(self) -> List[discord.TextChannel]:
@@ -49,6 +58,7 @@ class OnewayRelay:
         for idx in self.destination_ids:
             c = self.bot.get_channel(idx)
             if c:
+                assert isinstance(c, discord.TextChannel)  # nosec
                 ret.append(c)
         return ret
 
@@ -61,6 +71,7 @@ class OnewayRelay:
                 continue
             c = self.bot.get_channel(idx)
             if c:
+                assert isinstance(c, discord.TextChannel)  # nosec
                 ret.append(c)
         return ret
 

@@ -17,7 +17,11 @@ class SuggestionBox(commands.Cog):
     A configureable suggestion box cog
     """
 
-    __version__ = "1.0.6"
+    __version__ = "330.0.0"
+
+    def format_help_for_context(self, ctx):
+        pre_processed = super().format_help_for_context(ctx)
+        return f"{pre_processed}\nCog Version: {self.__version__}"
 
     def __init__(self, bot):
         super().__init__()
@@ -84,7 +88,7 @@ class SuggestionBox(commands.Cog):
     @checks.admin_or_permissions(manage_guild=True)
     @commands.guild_only()
     @commands.group(name="suggestionset", aliases=["setsuggestion"])
-    async def sset(self, ctx: commands.Context):
+    async def sset(self, ctx: commands.GuildContext):
         """
         Configuration settings for SuggestionBox
         """
@@ -115,7 +119,7 @@ class SuggestionBox(commands.Cog):
         await ctx.tick()
 
     @sset.command(name="addreactions")
-    async def sset_adds_reactions(self, ctx, option: bool = None):
+    async def sset_adds_reactions(self, ctx, option: Optional[bool] = None):
         """
         sets whether to add reactions to each suggestion
 
@@ -148,11 +152,11 @@ class SuggestionBox(commands.Cog):
         await ctx.tick()
 
     @has_active_box()
-    @commands.guild_only()  # TODO # Change this with additional logic.
+    @commands.guild_only()
     @commands.command()
     async def suggest(
         self,
-        ctx,
+        ctx: commands.GuildContext,
         channel: Optional[discord.TextChannel] = None,
         *,
         suggestion: str = "",
@@ -171,32 +175,14 @@ class SuggestionBox(commands.Cog):
             self.antispam[ctx.guild][ctx.author] = AntiSpam([])
 
         if self.antispam[ctx.guild][ctx.author].spammy:
-            return await ctx.send(_("You've send too many suggestions recently."))
-
-        ids = await self.config.guild(ctx.guild).boxes()
-        channels = [c for c in ctx.guild.text_channels if c.id in ids]
-        if channel is None:
-
-            if not channels:
-                return await ctx.send(
-                    _("Cannot find channels to send to, even though configured.")
-                )
-
-            if len(channels) == 1:
-                channel, = channels
-            else:
-                base_error = _(
-                    "Multiple suggestion boxes available, "
-                    "Please try again specifying one of these as the channel:"
-                )
-                output = f'{base_error}\n{", ".join(c.mention for c in channels)}'
-                return await ctx.send(output)
-
-        elif channel not in channels:
-            return await ctx.send(_("That channel is not a suggestionbox."))
+            return await ctx.send(_("You've sent too many suggestions recently."))
 
         if not suggestion:
             return await ctx.send(_("Please try again while including a suggestion."))
+
+        channel = await self.get_suggestion_channel(ctx, channel)
+        if not channel:
+            return
 
         perms = channel.permissions_for(ctx.guild.me)
         if not (perms.send_messages and perms.embed_links):
@@ -236,3 +222,35 @@ class SuggestionBox(commands.Cog):
 
             for reaction in await self.config.guild(ctx.guild).reactions():
                 await msg.add_reaction(reaction)
+
+    async def get_suggestion_channel(
+        self, ctx: commands.GuildContext, channel: Optional[discord.TextChannel] = None
+    ) -> Optional[discord.TextChannel]:
+        """ Tries to get the appropriate channel """
+
+        ids = await self.config.guild(ctx.guild).boxes()
+        channels = [c for c in ctx.guild.text_channels if c.id in ids]
+
+        if not channel:
+            if not channels:
+                await ctx.send(
+                    _("Cannot find channels to send to, even though configured.")
+                )
+                return None
+
+            if len(channels) == 1:
+                (channel,) = channels
+            else:
+                base_error = _(
+                    "Multiple suggestion boxes available, "
+                    "Please try again specifying one of these as the channel:"
+                )
+                output = f'{base_error}\n{", ".join(c.mention for c in channels)}'
+                await ctx.send(output)
+                return None
+
+        elif channel not in channels:
+            await ctx.send(_("That channel is not a suggestionbox."))
+            return None
+
+        return channel

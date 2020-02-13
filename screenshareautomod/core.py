@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import discord
 from redbot.core import commands, checks
 from redbot.core.config import Config
@@ -13,10 +15,11 @@ class ScreenshareAutoMod(commands.Cog):
     """
 
     __author__ = "mikeshardmind"
-    __version__ = "1.0.1"
-    __flavor_text__ = (
-        "UGH, discord doesn't remove this or make it respect the new system."
-    )
+    __version__ = "323.0.0"
+
+    def format_help_for_context(self, ctx):
+        pre_processed = super().format_help_for_context(ctx)
+        return f"{pre_processed}\nCog Version: {self.__version__}"
 
     def __init__(self, bot):
         super().__init__()
@@ -27,14 +30,24 @@ class ScreenshareAutoMod(commands.Cog):
         self.config.register_guild(active=False, action=0)
         self.config.register_channel(exclude=False)
 
-    @commands.Cog.listener()
-    async def vc_update(self, member, before, after):
+    @commands.Cog.listener("on_voice_state_update")
+    async def vc_update(
+        self,
+        member: discord.Member,
+        before: discord.VoiceState,
+        after: discord.VoiceState,
+    ):
         channel = after.channel
         guild = member.guild
         if channel and after.self_video:
             await self.maybe_punish_screenshare(guild, channel, member)
 
-    async def maybe_punish_screenshare(self, guild, channel, member):
+    async def maybe_punish_screenshare(
+        self,
+        guild: discord.Guild,
+        channel: discord.VoiceChannel,
+        member: discord.Member,
+    ):
         if not await self.config.guild(guild).active():
             return
 
@@ -79,14 +92,14 @@ class ScreenshareAutoMod(commands.Cog):
     @checks.admin_or_permissions(manage_guild=True)
     @commands.guild_only()
     @commands.group(name="screensharemod")
-    async def ssg(self, ctx):
+    async def ssg(self, ctx: commands.Context):
         """
         Stuff for configuring this cog
         """
         pass
 
     @ssg.command()
-    async def toggleactive(self, ctx):
+    async def toggleactive(self, ctx: commands.Context):
         """
         Toggles if this cog is active
         """
@@ -98,7 +111,7 @@ class ScreenshareAutoMod(commands.Cog):
         )
 
     @ssg.command()
-    async def action(self, ctx, action):
+    async def action(self, ctx: commands.Context, action: str):
         """
         Sets the action to take on users violating the no-screenshare policy.
 

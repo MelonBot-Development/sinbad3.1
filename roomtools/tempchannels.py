@@ -1,6 +1,6 @@
-from datetime import datetime, timedelta
 import asyncio
-import contextlib
+from datetime import datetime, timedelta
+from typing import Any, Dict
 
 import discord
 
@@ -30,37 +30,29 @@ class TempChannels(MixedMeta):
         if before.channel:
             await self.tmpc_cleanup(before.channel.guild)
 
-    @commands.Cog.listener("on_resumed")
-    async def tmpc_cleanup(self, *guilds: discord.Guild, load: bool = False):
-        if load:
-            await self.bot.wait_until_ready()
-        await asyncio.sleep(0.5)
+    async def tmpc_cleanup(self, guild: discord.Guild):
 
-        if not guilds:
-            guilds = self.bot.guilds
-
-        for guild in guilds:
-            for channel in guild.voice_channels:
-                conf = self.tmpc_config.channel(channel)
-                if not await conf.is_temp():
-                    continue
-                if (not channel.members) and (
-                    channel.created_at + timedelta(seconds=20)
-                ) < datetime.utcnow():
-                    try:
-                        await channel.delete(reason="temp channel cleaning")
-                    except discord.Forbidden:
-                        break  # Don't bash our heads on perms
-                    except discord.HTTPException:
-                        pass
-                    else:
-                        await conf.clear()
+        for channel in guild.voice_channels:
+            conf = self.tmpc_config.channel(channel)
+            if not await conf.is_temp():
+                continue
+            if (not channel.members) and (
+                channel.created_at + timedelta(seconds=20)
+            ) < datetime.utcnow():
+                try:
+                    await channel.delete(reason="temp channel cleaning")
+                except discord.Forbidden:
+                    break  # Don't bash our heads on perms
+                except discord.HTTPException:
+                    pass
+                else:
+                    await conf.clear()
 
     @commands.guild_only()
     @commands.bot_has_permissions(manage_channels=True)
     @checks.admin_or_permissions(manage_channels=True)
     @commands.group(name="tempchannelset", aliases=["tmpcset"], autohelp=True)
-    async def tmpcset(self, ctx: commands.Context):
+    async def tmpcset(self, ctx: commands.GuildContext):
         """
         Temporary Channel Settings
         """
@@ -68,7 +60,7 @@ class TempChannels(MixedMeta):
 
     @checks.admin_or_permissions(manage_channels=True)
     @tmpcset.command()
-    async def toggleactive(self, ctx: commands.Context, val: bool = None):
+    async def toggleactive(self, ctx: commands.GuildContext, val: bool = None):
         """
         toggle (or explicitly set) whether temp channel creation is enabled
         """
@@ -84,7 +76,7 @@ class TempChannels(MixedMeta):
     @checks.admin_or_permissions(manage_channels=True)
     @tmpcset.command(name="category")
     async def _category(
-        self, ctx: commands.Context, *, cat: discord.CategoryChannel = None
+        self, ctx: commands.GuildContext, *, cat: discord.CategoryChannel = None
     ):
         """
         Sets the category for temporary channels
@@ -101,7 +93,7 @@ class TempChannels(MixedMeta):
 
     @checks.admin_or_permissions(manage_channels=True)
     @tmpcset.command(name="usecurrentcategory")
-    async def _current_category(self, ctx: commands.Context, yes_or_no: bool):
+    async def _current_category(self, ctx: commands.GuildContext, yes_or_no: bool):
         """
         Sets temporary channels to be made in the same category as the command used.
 
@@ -118,7 +110,9 @@ class TempChannels(MixedMeta):
     @tmpc_active()
     @commands.bot_has_permissions(manage_channels=True)
     @commands.command(name="tmpc")
-    async def create_temp(self, ctx: commands.Context, *, channeldata: ChannelData):
+    async def create_temp(
+        self, ctx: commands.GuildContext, *, channeldata: ChannelData
+    ):
         """
         Creates a temporary channel
 
@@ -150,7 +144,7 @@ class TempChannels(MixedMeta):
             p.update(manage_channels=True, manage_roles=True, connect=True)
             overwrites[target] = p
 
-        opts = {"overwrites": overwrites}
+        opts: Dict[str, Any] = {"overwrites": overwrites}
         if cat:
             opts.update(category=cat)
 
@@ -170,8 +164,6 @@ class TempChannels(MixedMeta):
         await self.tmpc_config.channel(created).is_temp.set(True)
         self._antispam[ctx.author.id].stamp()
         asyncio.create_task(self._delayed_check(ctx.guild))
-        with contextlib.suppress(Exception):
-            current_voice = None
-            current_voice = ctx.author.voice.channel
-            if current_voice and ctx.guild.me.guild_permissions.move_members:
-                await ctx.author.move(created)
+        current_voice = ctx.author.voice.channel if ctx.author.voice else None
+        if current_voice and ctx.guild.me.guild_permissions.move_members:
+            await ctx.author.move_to(created)

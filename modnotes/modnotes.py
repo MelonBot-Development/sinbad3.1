@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Iterator, NamedTuple
+import logging
+
+from typing import Iterator, NamedTuple, Optional
 from datetime import datetime
 
 import discord
@@ -12,6 +14,9 @@ from redbot.core.data_manager import cog_data_path
 from redbot.core.utils import menus
 from .converters import MemberOrID
 from .apsw_wrapper import Connection
+
+
+log = logging.getLogger("red.sinbadcogs.modnotes")
 
 
 class Note(NamedTuple):
@@ -48,12 +53,36 @@ class Note(NamedTuple):
 class ModNotes(commands.Cog):
     """ Store moderation notes """
 
+    __version__ = "330.0.1"
+
+    def format_help_for_context(self, ctx):
+        pre_processed = super().format_help_for_context(ctx)
+        return f"{pre_processed}\nCog Version: {self.__version__}"
+
     def __init__(self, bot: Red):
         self.bot: Red = bot
         fp = str(cog_data_path(self) / "notes.db")
         self._connection = Connection(fp)
         self._ready_event = asyncio.Event()
+        self._init_task: Optional[asyncio.Task] = None
+
+    def init(self):
         self._init_task = asyncio.create_task(self.initialize())
+
+        def done_callback(fut: asyncio.Future):
+
+            try:
+                fut.exception()
+            except asyncio.CancelledError:
+                log.info("Modnotes didn't set up and was cancelled")
+            except asyncio.InvalidStateError as exc:
+                log.exception(
+                    "We somehow have a done callback when not done?", exc_info=exc
+                )
+            except Exception as exc:
+                log.exception("Unexpected exception in modnotes: ", exc_info=exc)
+
+        self._init_task.add_done_callback(done_callback)
 
     async def initialize(self):
         await self.bot.wait_until_ready()
@@ -85,7 +114,8 @@ class ModNotes(commands.Cog):
         await self._ready_event.wait()
 
     def cog_unload(self):
-        self._connection.close()
+        if self._init_task:
+            self._init_task.cancel()
 
     def insert(self, *, author_id: int, subject_id: int, guild_id: int, note: str):
         with self._connection.with_cursor() as cursor:
@@ -185,6 +215,8 @@ class ModNotes(commands.Cog):
             n.embed(ctx, color)
             for n in self.find_by_member(member_id=user.id, guild_id=ctx.guild.id)
         ]
+        if not notes:
+            return await ctx.send("No mod notes about this user")
         mx = len(notes)
         for i, n in enumerate(notes, 1):
             n.title = f"Showing #{i} of {mx} found notes"

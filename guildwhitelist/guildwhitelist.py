@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import logging
 
 import discord
@@ -6,28 +8,22 @@ from redbot.core import commands, checks
 from redbot.core.i18n import Translator, cog_i18n
 from redbot.core.utils.chat_formatting import box, pagify
 
-T_ = Translator("GuildWhitelist", __file__)
-_ = lambda s: s
-
+_ = Translator("GuildWhitelist", __file__)
 log = logging.getLogger("red.guildwhitelist")
-
-GWL_LIST_HEADER = _("IDs in whitelist:\n")
-FILE_NOT_FOUND = _("That doesn't appear to be a valid path for that")
-FMT_ERROR = _("That file didn't appear to be a valid settings file")
-
-DC_UNAVAILABLE = _("Data conversion is not available in your install.")
-
-_ = T_
 
 
 @cog_i18n(_)
 class GuildWhitelist(commands.Cog):
     """
-    prevent the bot from joining servers who are not whitelisted
+    Prevent the bot from joining servers who are not whitelisted
     or whose owner is not whitelisted or the owner of the bot
     """
 
-    __version__ = "2.0.2"
+    __version__ = "333.0.0"
+
+    def format_help_for_context(self, ctx):
+        pre_processed = super().format_help_for_context(ctx)
+        return f"{pre_processed}\nCog Version: {self.__version__}"
 
     def __init__(self, bot):
         super().__init__()
@@ -76,10 +72,8 @@ class GuildWhitelist(commands.Cog):
         """
         list whitelisted IDs
         """
-        output = GWL_LIST_HEADER
         whitelist = await self.config.whitelist()
-
-        output += "\n".join(str(x) for x in whitelist)
+        output = "\n".join((_("IDs in whitelist:\n"), *map(str, whitelist)))
 
         for page in pagify(output):
             await ctx.send(box(page))

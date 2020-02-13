@@ -1,43 +1,42 @@
-from abc import ABC
+from __future__ import annotations
+
+import asyncio
+import logging
 import contextlib
-from typing import AsyncIterator, Tuple, NamedTuple, cast, no_type_check
+import re
+from abc import ABCMeta
+from typing import AsyncIterator, Tuple, Optional, Union, List, Dict
+
 import discord
+from discord.ext.commands import CogMeta as DPYCogMeta
 from redbot.core import checks, commands, bank
 from redbot.core.config import Config
-from redbot.core.utils.chat_formatting import pagify
-from redbot.core.commands.converter import get_dict_converter
+from redbot.core.utils.chat_formatting import box, pagify
 
-from discord.ext.commands.core import _convert_to_bool as bool_converter
-
-from .utils import UtilMixin
-from .massmanager import MassManagementMixin
 from .events import EventMixin
 from .exceptions import RoleManagementException, PermissionOrHierarchyException
-
-MassSetArgs = get_dict_converter("self_removable", "self_role")  # type: ignore
-
-
-class MockedMember(NamedTuple):
-    guild: discord.Guild
-    id: int
-
-    @property
-    def created_at(self):
-        return discord.utils.snowflake_time(self.id)
+from .massmanager import MassManagementMixin
+from .utils import UtilMixin, variation_stripper_re
+from .converters import EmojiRolePairConverter
 
 
-class CompositeMetaClass(type(commands.Cog), type(ABC)):
+log = logging.getLogger("red.sinbadcogs.rolemanagement")
+
+
+# This previously used ``(type(commands.Cog), type(ABC))``
+# This was changed to be explicit so that mypy
+# would be slightly happier about it.
+# This does introduce a potential place this
+# can break in the future, but this would be an
+# Upstream breaking change announced in advance
+class CompositeMetaClass(DPYCogMeta, ABCMeta):
     """
-    Discord.py transforms instance methods into classes as class variables which contain
-    the previous instance method, with no proper ability to reference the intended instance.
-    
-    Then uses a metaclass to inject the instance into copies
-    of those class variables which exist inside an instance descriptor
-
-    I wish I was kidding. I wish I had the time to do something better.
+    This really only exists because of mypy
+    wanting mixins to be individually valid classes.
     """
 
-    pass
+    pass  # MRO is fine on __new__ with super() use
+    # no need to manually ensure both get handled here.
 
 
 class RoleManagement(
@@ -51,13 +50,20 @@ class RoleManagement(
     Cog for role management
     """
 
-    __author__ = "mikeshardmind (Sinbad)"
-    __version__ = "3.3.5"
+    __author__ = "mikeshardmind(Sinbad), DiscordLiz"
+    __version__ = "330.1.1"
+
+    def format_help_for_context(self, ctx):
+        pre_processed = super().format_help_for_context(ctx)
+        return f"{pre_processed}\nCog Version: {self.__version__}"
 
     def __init__(self, bot):
         self.bot = bot
         self.config = Config.get_conf(
             self, identifier=78631113035100160, force_registration=True
+        )
+        self.config.register_global(
+            handled_variation=False, handled_full_str_emoji=False
         )
         self.config.register_role(
             exclusive_to=[],
@@ -75,9 +81,76 @@ class RoleManagement(
             "REACTROLE", roleid=None, channelid=None, guildid=None
         )  # ID : Message.id, str(React)
         self.config.register_guild(notify_channel=None)
+        self._ready = asyncio.Event()
+        self._start_task: Optional[asyncio.Task] = None
         super().__init__()
 
+    def cog_unload(self):
+        if self._start_task:
+            self._start_task.cancel()
+
+    def init(self):
+        self._start_task = asyncio.create_task(self.initialization())
+
+        def done_callback(fut: asyncio.Future):
+
+            try:
+                fut.exception()
+            except asyncio.CancelledError:
+                log.info("rolemanagement didn't set up and was cancelled")
+            except asyncio.InvalidStateError as exc:
+                log.exception(
+                    "We somehow have a done callback when not done?", exc_info=exc
+                )
+            except Exception as exc:
+                log.exception("Unexpected exception in rolemanagement: ", exc_info=exc)
+
+        self._start_task.add_done_callback(done_callback)
+
+    async def initialization(self):
+        data: Dict[str, Dict[str, Dict[str, Union[int, bool, List[int]]]]]
+        await self.bot.wait_until_red_ready()
+        if not await self.config.handled_variation():
+            data = await self.config.custom("REACTROLE").all()
+            to_adjust = {}
+            for message_id, emojis_to_data in data.items():
+                for emoji_key in emojis_to_data:
+                    new_key, c = variation_stripper_re.subn("", emoji_key)
+                    if c:
+                        to_adjust[(message_id, emoji_key)] = new_key
+
+            for (message_id, emoji_key), new_key in to_adjust.items():
+                data[message_id][new_key] = data[message_id][emoji_key]
+                data[message_id].pop(emoji_key, None)
+
+            await self.config.custom("REACTROLE").set(data)
+            await self.config.handled_variation.set(True)
+
+        if not await self.config.handled_full_str_emoji():
+            data = await self.config.custom("REACTROLE").all()
+            to_adjust = {}
+            pattern = re.compile(r"^(<?a?:)?([A-Za-z0-9_]+):([0-9]+)(\:?>?)$")
+            # Am not a fan....
+            for message_id, emojis_to_data in data.items():
+                for emoji_key in emojis_to_data:
+                    new_key, c = pattern.subn(r"\3", emoji_key)
+                    if c:
+                        to_adjust[(message_id, emoji_key)] = new_key
+
+            for (message_id, emoji_key), new_key in to_adjust.items():
+                data[message_id][new_key] = data[message_id][emoji_key]
+                data[message_id].pop(emoji_key, None)
+
+            await self.config.custom("REACTROLE").set(data)
+            await self.config.handled_full_str_emoji.set(True)
+
+        self._ready.set()
+
+    async def wait_for_ready(self):
+        await self._ready.wait()
+
     async def cog_before_invoke(self, ctx):
+        await self.wait_for_ready()
         if ctx.guild:
             await self.maybe_update_guilds(ctx.guild)
 
@@ -86,7 +159,7 @@ class RoleManagement(
     @checks.admin_or_permissions(manage_roles=True)
     @commands.command(name="hackrole")
     async def hackrole(
-        self, ctx: commands.Context, user_id: int, *, role: discord.Role
+        self, ctx: commands.GuildContext, user_id: int, *, role: discord.Role
     ):
         """
         Puts a stickyrole on someone not in the server.
@@ -111,9 +184,9 @@ class RoleManagement(
                 await ctx.maybe_send_embed("They are in the guild...assigned anyway.")
         else:
 
-            member = MockedMember(ctx.guild, user_id)
-
-            async with self.config.member(member).roles() as sticky:
+            async with self.config.member_from_ids(
+                ctx.guild.id, user_id
+            ).roles() as sticky:
                 if role.id not in sticky:
                     sticky.append(role.id)
 
@@ -121,7 +194,7 @@ class RoleManagement(
 
     @checks.is_owner()
     @commands.command(name="rrcleanup", hidden=True)
-    async def rolemanagementcleanup(self, ctx):
+    async def rolemanagementcleanup(self, ctx: commands.GuildContext):
         """ :eyes: """
         data = await self.config.custom("REACTROLE").all()
 
@@ -142,6 +215,7 @@ class RoleManagement(
             channel = ctx.bot.get_channel(channel_id)
             if channel:
                 with contextlib.suppress(discord.HTTPException):
+                    assert isinstance(channel, discord.TextChannel)  # nosec
                     message = await channel.fetch_message(message_id)
 
             if not message:
@@ -156,10 +230,99 @@ class RoleManagement(
     @commands.guild_only()
     @commands.bot_has_permissions(manage_roles=True)
     @checks.admin_or_permissions(manage_guild=True)
+    @commands.command(name="clearmessagebinds")
+    async def clear_message_binds(
+        self, ctx: commands.Context, channel: discord.TextChannel, message_id: int
+    ):
+        """
+        Clear all binds from a message.
+        """
+        try:
+            message = await channel.fetch_message(message_id)
+        except discord.HTTPException:
+            return await ctx.maybe_send_embed("No such message")
+
+        await self.config.custom("REACTROLE", str(message.id)).clear()
+        await ctx.tick()
+
+    @commands.guild_only()
+    @commands.bot_has_permissions(manage_roles=True)
+    @checks.admin_or_permissions(manage_guild=True)
+    @commands.command(name="bulkrolebind")
+    async def bulk_role_bind_command(
+        self,
+        ctx: commands.GuildContext,
+        channel: discord.TextChannel,
+        message_id: int,
+        *,
+        emoji_role_pairs: EmojiRolePairConverter,
+    ):
+        """
+        Add role binds to a message
+        """
+
+        pairs = emoji_role_pairs.pairs
+
+        if not await self.all_are_valid_roles(ctx, *pairs.values()):
+            return await ctx.maybe_send_embed(
+                "Can't do that. Discord role heirarchy applies here."
+            )
+
+        try:
+            message = await channel.fetch_message(message_id)
+        except discord.HTTPException:
+            return await ctx.maybe_send_embed("No such message")
+
+        to_store: Dict[str, discord.Role] = {}
+        _emoji: Optional[Union[discord.Emoji, str]]
+
+        for emoji, role in pairs.items():
+
+            _emoji = discord.utils.find(lambda e: str(e) == emoji, self.bot.emojis)
+            if _emoji is None:
+                try:
+                    await ctx.message.add_reaction(emoji)
+                except discord.HTTPException:
+                    return await ctx.maybe_send_embed(f"No such emoji {emoji}")
+                else:
+                    _emoji = emoji
+                    eid = self.strip_variations(emoji)
+            else:
+                eid = str(_emoji.id)
+
+            if not any(str(r) == emoji for r in message.reactions):
+                try:
+                    await message.add_reaction(_emoji)
+                except discord.HTTPException:
+                    return await ctx.maybe_send_embed(
+                        "Hmm, that message couldn't be reacted to"
+                    )
+
+            to_store[eid] = role
+
+        for eid, role in to_store.items():
+            cfg = self.config.custom("REACTROLE", str(message.id), eid)
+            await cfg.set(
+                {
+                    "roleid": role.id,
+                    "channelid": message.channel.id,
+                    "guildid": role.guild.id,
+                }
+            )
+
+        await ctx.send(
+            f"Remember, the reactions only function according to "
+            f"the rules set for the roles using `{ctx.prefix}roleset`",
+            delete_after=30,
+        )
+
+    @commands.guild_only()
+    @commands.bot_has_permissions(manage_roles=True)
+    @checks.admin_or_permissions(manage_guild=True)
     @commands.command(name="rolebind")
     async def bind_role_to_reactions(
         self,
-        ctx: commands.Context,
+        ctx: commands.GuildContext,
         role: discord.Role,
         channel: discord.TextChannel,
         msgid: int,
@@ -168,7 +331,7 @@ class RoleManagement(
         """
         Binds a role to a reaction on a message...
 
-        The role is only given if the criteria for it are met. 
+        The role is only given if the criteria for it are met.
         Make sure you configure the other settings for a role in [p]roleset
         """
 
@@ -182,6 +345,8 @@ class RoleManagement(
         except discord.HTTPException:
             return await ctx.maybe_send_embed("No such message")
 
+        _emoji: Optional[Union[discord.Emoji, str]]
+
         _emoji = discord.utils.find(lambda e: str(e) == emoji, self.bot.emojis)
         if _emoji is None:
             try:
@@ -190,9 +355,9 @@ class RoleManagement(
                 return await ctx.maybe_send_embed("No such emoji")
             else:
                 _emoji = emoji
-                eid = emoji
+                eid = self.strip_variations(emoji)
         else:
-            eid = _emoji.id
+            eid = str(_emoji.id)
 
         if not any(str(r) == emoji for r in message.reactions):
             try:
@@ -202,7 +367,7 @@ class RoleManagement(
                     "Hmm, that message couldn't be reacted to"
                 )
 
-        cfg = self.config.custom("REACTROLE", message.id, eid)
+        cfg = self.config.custom("REACTROLE", str(message.id), eid)
         await cfg.set(
             {
                 "roleid": role.id,
@@ -232,64 +397,29 @@ class RoleManagement(
                 "Can't do that. Discord role heirarchy applies here."
             )
 
-        await self.config.custom("REACTROLE", msgid, emoji).clear()
+        await self.config.custom(
+            "REACTROLE", f"{msgid}", self.strip_variations(emoji)
+        ).clear()
         await ctx.tick()
 
     @commands.guild_only()
     @commands.bot_has_permissions(manage_roles=True)
     @checks.admin_or_permissions(manage_guild=True)
     @commands.group(name="roleset", autohelp=True)
-    async def rgroup(self, ctx: commands.Context):
+    async def rgroup(self, ctx: commands.GuildContext):
         """
         Settings for role requirements
         """
         pass
 
-    # Limited test code
-    @commands.check(
-        lambda ctx: ctx.author.id in (78631113035100160, 240961564503441410)
-    )
-    @rgroup.command(name="massset")
-    @no_type_check
-    async def rmass_set(
-        self, ctx, roles: commands.Greedy[discord.Role], *, extras: MassSetArgs
-    ):
-        """
-        Expiramental
-        """
-        extras = cast(dict, MassSetArgs)
-
-        if not roles:
-            return await ctx.send_help()
-
-        if not extras:
-            return await ctx.send_help()
-
-        to_set = {}
-
-        for k, v in extras.items():
-            to_set[k] = bool_converter(v)
-
-        for role in roles:
-            if not await self.all_are_valid_roles(ctx, role):
-                return await ctx.maybe_send_embed(
-                    "Can't do that. Discord role heirarchy applies here."
-                )
-
-        for role in roles:
-            for k, v in to_set.items():
-                await self.config.role(role).get_attr(k).set(v)
-        await ctx.tick()
-
     @rgroup.command(name="viewreactions")
-    async def rg_view_reactions(self, ctx: commands.Context):
+    async def rg_view_reactions(self, ctx: commands.GuildContext):
         """
         View the reactions enabled for the server
         """
         # This design is intentional for later extention to view this per role
 
         use_embeds = await ctx.embed_requested()
-        # pylint: disable=E1133
         react_roles = "\n".join(
             [
                 msg
@@ -305,7 +435,7 @@ class RoleManagement(
         # ctx.send is already going to escape said mentions if any somehow get generated
         # should also not be possible to do so without willfully being done by an admin.
 
-        color = None
+        color = await ctx.embed_colour() if use_embeds else None
 
         for page in pagify(
             react_roles, escape_mass_mentions=False, page_length=1800, shorten_by=0
@@ -313,13 +443,12 @@ class RoleManagement(
             # unrolling iterative calling of ctx.maybe_send_embed
             # here to reduce function and coroutine overhead.
             if use_embeds:
-                color = color or await ctx.embed_colour()
                 await ctx.send(embed=discord.Embed(description=page, color=color))
             else:
                 await ctx.send(page)
 
     @rgroup.command(name="viewrole")
-    async def rg_view_role(self, ctx: commands.Context, *, role: discord.Role):
+    async def rg_view_role(self, ctx: commands.GuildContext, *, role: discord.Role):
         """
         Views the current settings for a role
         """
@@ -359,16 +488,18 @@ class RoleManagement(
             await ctx.send(page)
 
     @rgroup.command(name="cost")
-    async def make_purchasable(self, ctx, cost: int, *, role: discord.Role):
+    async def make_purchasable(
+        self, ctx: commands.GuildContext, cost: int, *, role: discord.Role
+    ):
         """
-        Makes a role purchasable for a specified cost. 
+        Makes a role purchasable for a specified cost.
         Cost must be a number greater than 0.
         A cost of exactly 0 can be used to remove purchasability.
-        
+
         Purchase eligibility still follows other rules including self assignable.
-        
-        Warning: If these roles are bound to a reaction, 
-        it will be possible to gain these without paying. 
+
+        Warning: If these roles are bound to a reaction,
+        it will be possible to gain these without paying.
         """
 
         if not await self.all_are_valid_roles(ctx, role):
@@ -387,7 +518,7 @@ class RoleManagement(
 
     @rgroup.command(name="forbid")
     async def forbid_role(
-        self, ctx: commands.Context, role: discord.Role, *, user: discord.Member
+        self, ctx: commands.GuildContext, role: discord.Role, *, user: discord.Member
     ):
         """
         Forbids a user from gaining a specific role.
@@ -401,7 +532,7 @@ class RoleManagement(
 
     @rgroup.command(name="unforbid")
     async def unforbid_role(
-        self, ctx: commands.Context, role: discord.Role, *, user: discord.Member
+        self, ctx: commands.GuildContext, role: discord.Role, *, user: discord.Member
     ):
         """
         Unforbids a user from gaining a specific role.
@@ -414,7 +545,7 @@ class RoleManagement(
         await ctx.tick()
 
     @rgroup.command(name="exclusive")
-    async def set_exclusivity(self, ctx: commands.Context, *roles: discord.Role):
+    async def set_exclusivity(self, ctx: commands.GuildContext, *roles: discord.Role):
         """
         Takes 2 or more roles and sets them as exclusive to eachother
         """
@@ -432,7 +563,7 @@ class RoleManagement(
         await ctx.tick()
 
     @rgroup.command(name="unexclusive")
-    async def unset_exclusivity(self, ctx: commands.Context, *roles: discord.Role):
+    async def unset_exclusivity(self, ctx: commands.GuildContext, *roles: discord.Role):
         """
         Takes any number of roles, and removes their exclusivity settings
         """
@@ -449,7 +580,9 @@ class RoleManagement(
         await ctx.tick()
 
     @rgroup.command(name="sticky")
-    async def setsticky(self, ctx, role: discord.Role, sticky: bool = None):
+    async def setsticky(
+        self, ctx: commands.GuildContext, role: discord.Role, sticky: bool = None
+    ):
         """
         sets a role as sticky if used without a settings, gets the current ones
         """
@@ -473,7 +606,7 @@ class RoleManagement(
 
     @rgroup.command(name="requireall")
     async def reqall(
-        self, ctx: commands.Context, role: discord.Role, *roles: discord.Role
+        self, ctx: commands.GuildContext, role: discord.Role, *roles: discord.Role
     ):
         """
         Sets the required roles to gain a role
@@ -487,7 +620,7 @@ class RoleManagement(
 
     @rgroup.command(name="requireany")
     async def reqany(
-        self, ctx: commands.Context, role: discord.Role, *roles: discord.Role
+        self, ctx: commands.GuildContext, role: discord.Role, *roles: discord.Role
     ):
         """
         Sets a role to require already having one of another
@@ -500,7 +633,9 @@ class RoleManagement(
         await ctx.tick()
 
     @rgroup.command(name="selfrem")
-    async def selfrem(self, ctx, role: discord.Role, removable: bool = None):
+    async def selfrem(
+        self, ctx: commands.GuildContext, role: discord.Role, removable: bool = None
+    ):
         """
         Sets if a role is self-removable (default False)
 
@@ -519,10 +654,12 @@ class RoleManagement(
         await ctx.tick()
 
     @rgroup.command(name="selfadd")
-    async def selfadd(self, ctx, role: discord.Role, assignable: bool = None):
+    async def selfadd(
+        self, ctx: commands.GuildContext, role: discord.Role, assignable: bool = None
+    ):
         """
         Sets if a role is self-assignable via command
-        
+
         (default False)
 
         use without a setting to view current
@@ -542,14 +679,52 @@ class RoleManagement(
     @checks.bot_has_permissions(manage_roles=True)
     @commands.guild_only()
     @commands.group(name="srole", autohelp=True)
-    async def srole(self, ctx: commands.Context):
+    async def srole(self, ctx: commands.GuildContext):
         """
         Self assignable role commands
         """
         pass
 
+    @srole.command(name="list")
+    async def srole_list(self, ctx: commands.GuildContext):
+        """
+        Lists the selfroles and any associated costs.
+        """
+
+        MYPY = False
+        if MYPY:
+            # remove this when mypy supports type narrowing from :=
+            # It's less efficient, so not removing the actual
+            # implementation below
+            data: Dict[discord.Role, int] = {}
+            for role_id, vals in (await self.config.all_roles()).items():
+                role = ctx.guild.get_role(role_id)
+                if role and vals["self_role"]:
+                    data[role] = vals["cost"]
+        else:
+            data = {
+                role: vals["cost"]
+                for role_id, vals in (await self.config.all_roles()).items()
+                if (role := ctx.guild.get_role(role_id)) and vals["self_role"]
+            }
+
+        if not data:
+            return await ctx.send("There aren't any self roles here.")
+
+        # This is really ugly, but relatively optimal.
+        # Should this be changed later for clarity instead? --Liz
+        message = "\n".join(
+            (
+                "%s%s" % (role.name, (f": {cost}" if cost else ""))
+                for role, cost in sorted(data.items(), key=lambda kv: kv[1])
+            )
+        )
+
+        for page in pagify(message):
+            await ctx.send(box(message))
+
     @srole.command(name="buy")
-    async def srole_buy(self, ctx: commands.Context, *, role: discord.Role):
+    async def srole_buy(self, ctx: commands.GuildContext, *, role: discord.Role):
         """
         Purchase a role
         """
@@ -589,7 +764,7 @@ class RoleManagement(
                 await ctx.tick()
 
     @srole.command(name="add")
-    async def sadd(self, ctx: commands.Context, *, role: discord.Role):
+    async def sadd(self, ctx: commands.GuildContext, *, role: discord.Role):
         """
         Join a role
         """
@@ -621,7 +796,7 @@ class RoleManagement(
                 await ctx.tick()
 
     @srole.command(name="remove")
-    async def srem(self, ctx: commands.Context, *, role: discord.Role):
+    async def srem(self, ctx: commands.GuildContext, *, role: discord.Role):
         """
         leave a role
         """
@@ -641,7 +816,7 @@ class RoleManagement(
         """
         Builds info.
 
-        Info is suitable for passing to embeds if use_embeds is True 
+        Info is suitable for passing to embeds if use_embeds is True
         """
 
         linkfmt = (
@@ -667,9 +842,12 @@ class RoleManagement(
                         f" (use `roleset fixup` to find missing data for this)"
                     )
 
+                emoji: Union[discord.Emoji, str]
                 if emoji_info.isdigit():
-                    emoji = discord.utils.get(self.bot.emojis, id=int(emoji_info))
-                    emoji = emoji or f"A custom enoji with id {emoji_info}"
+                    emoji = (
+                        discord.utils.get(self.bot.emojis, id=int(emoji_info))
+                        or f"A custom enoji with id {emoji_info}"
+                    )
                 else:
                     emoji = emoji_info
 
@@ -682,7 +860,7 @@ class RoleManagement(
         """
         yields:
             str, str, dict
-            
+
             first str: message id
             second str: emoji id or unicode codepoint
             dict: data from the corresponding:

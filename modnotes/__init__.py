@@ -4,6 +4,7 @@ try:
     import apsw
 except ImportError:
     HAS_APSW = False
+    apsw = None
 else:
     HAS_APSW = True
 
@@ -14,4 +15,6 @@ def setup(bot):
     else:
         from .modnotes import ModNotes
 
-        bot.add_cog(ModNotes(bot))
+        cog = ModNotes(bot)
+        bot.add_cog(cog)
+        cog.init()

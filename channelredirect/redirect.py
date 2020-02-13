@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import contextlib
 from typing import Set
@@ -5,7 +7,6 @@ from typing import Set
 import discord
 from redbot.core import commands, checks
 from redbot.core.config import Config
-from redbot.core.utils.chat_formatting import pagify
 
 from .converters import CommandConverter, CogOrCOmmand, TrinaryBool
 
@@ -15,7 +16,14 @@ class ChannelRedirect(commands.Cog):
     Redirect commands from wrong channels
     """
 
-    def __init__(self, bot):
+    __version__ = "330.0.0"
+
+    def format_help_for_context(self, ctx):
+        pre_processed = super().format_help_for_context(ctx)
+        return f"{pre_processed}\nCog Version: {self.__version__}"
+
+    def __init__(self, bot, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         self.bot = bot
         self.config = Config.get_conf(
             self, identifier=78631113035100160, force_registration=True
@@ -31,8 +39,7 @@ class ChannelRedirect(commands.Cog):
         )
 
     def cog_unload(self):
-        if self.bot._before_invoke is self.before_invoke_hook:
-            self.bot._before_invoke = None
+        self.bot.remove_before_invoke_hook(self.before_invoke_hook)
 
     @staticmethod
     def should_early_exit(conf: dict, com: commands.Command):
@@ -55,11 +62,13 @@ class ChannelRedirect(commands.Cog):
     ) -> Set[discord.TextChannel]:
 
         guild = ctx.guild
+        assert guild is not None  # nosec
         com = com or ctx.command
         gset = await self.config.guild(guild).all()
         channels = guild.text_channels
+        allowed_ids: Set[int] = set()
 
-        if self.should_early_exit(gset, com):
+        if com and self.should_early_exit(gset, com):
             return set(channels)
 
         if gset["mode"] == "whitelist":
@@ -93,7 +102,6 @@ class ChannelRedirect(commands.Cog):
             return True
 
         imset = await self.config.guild(ctx.guild).immunities.all()
-        print(imset)
         vals = [v for k, v in imset.items() if k in (str(ctx.channel.id), "global")]
         immune_ids = set()
         for val in vals:
@@ -102,23 +110,26 @@ class ChannelRedirect(commands.Cog):
         if immune_ids & {r.id for r in ctx.author.roles}:
             return True
 
-    async def before_invoke_hook(self, ctx):
+    async def before_invoke_hook(self, ctx: commands.Context):
 
         if await self.is_redirect_immune(ctx):
             return True
 
         allowed_chans = await self.get_allowed_channels(ctx)
 
-        if ctx.channel not in allowed_chans:
+        if ctx.channel not in allowed_chans and not isinstance(
+            ctx.command, commands.commands._AlwaysAvailableCommand
+        ):
             chan_mentions = ", ".join(c.mention for c in allowed_chans)
             await ctx.send(
                 f"{ctx.author.mention} This command is only available in {chan_mentions}",
                 delete_after=30,
             )
-            raise commands.CheckFailure()  # This is abuse.
+            raise commands.CheckFailure()
         else:
             return True
 
+    @commands.guild_only()
     @checks.admin_or_permissions(manage_guild=True)
     @commands.group(name="redirectset")
     async def rset(self, ctx):
@@ -263,23 +274,23 @@ class ChannelRedirect(commands.Cog):
         """
         Clears all exceptions.
         """
-        REACTS = {
+        reacts = {
             "\N{WHITE HEAVY CHECK MARK}": True,
             "\N{NEGATIVE SQUARED CROSS MARK}": False,
         }
         m = await ctx.send("Are you sure?")
-        for r in REACTS.keys():
+        for r in reacts.keys():
             await m.add_reaction(r)
         try:
             reaction, _user = await self.bot.wait_for(
                 "reaction_add",
-                check=lambda r, u: u == ctx.author and str(r) in REACTS,
+                check=lambda rr, u: u == ctx.author and str(rr) in reacts,
                 timeout=30,
             )
         except asyncio.TimeoutError:
             return await ctx.send("Ok, try responding with an emoji next time.")
 
-        if REACTS.get(str(reaction)):
+        if reacts.get(str(reaction)):
             await self.config.guild(ctx.guild).command.set({})
             await self.config.guild(ctx.guild).cog.set({})
             await ctx.tick()

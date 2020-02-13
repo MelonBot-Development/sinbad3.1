@@ -1,14 +1,22 @@
+from __future__ import annotations
+
 import asyncio
 import contextlib
 import re
-from copy import copy
 import unicodedata as ud
-from redbot.core.utils import menus
-from redbot.core.utils.chat_formatting import box, pagify
+from copy import copy
+import hashlib
+import functools
+
 import discord
 from redbot.core import commands, checks
+from redbot.core.utils import menus
+from redbot.core.utils.chat_formatting import box, pagify
+
+from .variations import APPEND_VARIATIONS_TO
 
 SPOILER_RE = re.compile(r"(?s)\|{2}(?P<CONTENT>.*?)\|{2}")
+VARIATION = "\N{VARIATION SELECTOR-16}"
 
 
 def get_name(c: str) -> str:
@@ -23,18 +31,12 @@ def get_name(c: str) -> str:
         return c.encode("raw_unicode_escape").decode("utf-8")
 
 
-class DevTools(commands.Cog):
-    """ Some tools """
-
-    __version__ = "2.0.2"
-
-    def __init__(self, bot, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.bot = bot
-
+class DevBase:
     @commands.guild_only()
     @commands.command(name="userallowedcoms")
-    async def usercontextallowedcoms(self, ctx, *, member: discord.Member):
+    async def usercontextallowedcoms(
+        self, ctx: commands.Context, *, member: discord.Member
+    ):
         """ checks user allowed commands in context """
 
         fmsg = copy(ctx.message)
@@ -64,7 +66,7 @@ class DevTools(commands.Cog):
             await menus.menu(ctx, pages, menus.DEFAULT_CONTROLS)
 
     @commands.command(name="emojiinfo")
-    async def emoji(self, ctx):
+    async def emoji(self, ctx: commands.Context):
         """
         Find info about an emoji
         """
@@ -75,17 +77,26 @@ class DevTools(commands.Cog):
                 "reaction_add",
                 check=(lambda r, u: u == ctx.author and r.message.id == m.id),
                 timeout=60,
-            )  # type: discord.Reaction, discord.User
+            )
         except asyncio.TimeoutError:
             return await ctx.send("Okay, try again later.")
         else:
             emoji = react.emoji
 
         if isinstance(emoji, str):
+            if emoji in APPEND_VARIATIONS_TO:
+                emoji = emoji + VARIATION
             to_send = "".join(get_name(c) for c in emoji)
             await ctx.send(
-                f"To send or react with this unicode emoji, send or react with:"
-                f'\n```\n"{to_send}"\n```'
+                f"This is a unicode emoji. To send it or react with it, "
+                f"just pass the string itself. Some emoji should use variation-selector-16 "
+                f"to request an emoji rendering for consistent behavior. "
+                f"\n(Further reading <https://unicode.org/Public/emoji/12.1/emoji-variation-sequences.txt>)"
+                f"\nExample: "
+                f"\n```py\n"
+                f"# The example uses the emoji you used\n"
+                f'await ctx.send("{to_send}")\n'
+                f'await ctx.message.add_reaction("{to_send}")\n```'
             )
         else:
             await ctx.send(
@@ -102,15 +113,14 @@ class DevTools(commands.Cog):
                 f'    await ctx.send("I can\'t use that emoji")\n```'
             )
 
-    # noinspection PyProtectedMember
     @checks.admin_or_permissions(manage_messages=True)
     @commands.guild_only()
     @commands.command()
-    async def unspoil(self, ctx, message_id: int):
+    async def unspoil(self, ctx: commands.Context, message_id: int):
         """ Get what was said without spoiler tags """
 
         message = discord.utils.get(
-            ctx.guild._state._messages, channel=ctx.channel, id=message_id
+            ctx.bot.cached_messages, channel=ctx.channel, id=message_id
         )
         if message is None:
             try:
@@ -126,3 +136,67 @@ class DevTools(commands.Cog):
         text = text.strip()
         if text:
             await ctx.send(text)
+
+
+# Okay, so some dynamic fuckery is gonna happen here due to the
+# way the discord.py metaclass works
+
+
+# This needs self, as it belongs to the cog, discord.py will try to
+# inject the cog instance as the first parameter.
+# We don't actually need it if not for this behavior
+@commands.cooldown(1, 2, commands.BucketType.user)
+@commands.group(name="hashlib")
+async def hashlib_command(self, ctx: commands.Context):
+    """
+    Hash commands
+    """
+    pass
+
+
+for hashname in hashlib.algorithms_available:
+
+    if "shake" in hashname:
+        continue
+    # not supporting it.
+    # Would support if length was optional and defaulted to max
+
+    # Meanwhile (see above about self), as this is not defined on the class at all
+    # This needs to *not* have self defined
+
+    async def callback(func_name, ctx: commands.Context, *, to_hash: str):
+
+        hashed = hashlib.new(func_name)
+        hashed.update(to_hash.encode())
+        hexed = hashed.hexdigest()
+        await ctx.send(box(hexed))
+
+    # Patch this in Red... ffs
+    p = functools.partial(callback, hashname)
+    p.__globals__ = callback.__globals__
+    p.__module__ = callback.__module__
+
+    c = commands.command(name=hashname, help=f"Hash using {hashname}")(p)
+
+    if c.name not in hashlib_command.all_commands:
+        hashlib_command.add_command(c)
+
+
+class HashlibMixin:
+    """ This is mostly here to easily mess with things... """
+
+    c = hashlib_command
+
+
+class DevTools(HashlibMixin, DevBase, commands.Cog):
+    """ Some tools """
+
+    __version__ = "330.1.8"
+
+    def format_help_for_context(self, ctx):
+        pre_processed = super().format_help_for_context(ctx)
+        return f"{pre_processed}\nCog Version: {self.__version__}"
+
+    def __init__(self, bot, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.bot = bot

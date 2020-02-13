@@ -1,13 +1,88 @@
 # SinbadCogs
-[![Build Status](https://travis-ci.org/mikeshardmind/SinbadCogs.svg?branch=v3)](https://travis-ci.org/mikeshardmind/SinbadCogs) 
-[![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/ambv/black) 
+[![Code style: black](https://github.com/mikeshardmind/SinbadCogs/workflows/black/badge.svg)](https://github.com/ambv/black) 
+[![Type Checked with mypy](https://github.com/mikeshardmind/SinbadCogs/workflows/mypy/badge.svg)](https://github.com/python/mypy) 
 [![Red](https://img.shields.io/badge/Red-DiscordBot-red.svg)](https://github.com/Cog-Creators/Red-DiscordBot/tree/V3/develop) 
-[![Maintainability](https://api.codeclimate.com/v1/badges/9807ad79df31d77bc5b5/maintainability)](https://codeclimate.com/github/mikeshardmind/SinbadCogs/maintainability)
 
 
 ## Whats here?
 
 Various addons for Red Discordbot. Most of these are focused around utility purposes.
+
+
+### AntiMentionSpam
+
+This cog provides automated actions against people spamming mentions.
+
+Configuration is available via the `antimentionspam` command.
+
+
+### BanSync
+
+This cog provides a few functions for handling bans across multiple servers.
+
+More help is available via `help BanSync`
+
+
+### EmbedMaker
+
+This cog provides a means to create, store, and send embedded messages from the bot.
+
+Full documentation is still pending,
+but a robust example is available
+[here](https://gist.github.com/mikeshardmind/0e15779370d7761a8608ce94936721ed) for now
+
+### GuildBlacklist
+
+Allows blacklisting guilds by ID or the owner's ID
+
+### GuildWhitelist
+
+Allows whitelisting guilds by ID or the owner's ID
+
+### QuoteTools
+
+Provides a quick way to reference other messages without needing to jump to them to view.
+
+### Relays
+
+Mirror messages sent in a channel to other channels.
+
+### RoleManagement
+
+Provides:
+
+ - Reaction roles
+ - Self roles
+ - Purchasable roles
+ - User list data based on roles
+ - Mass Role modifications
+ 
+Note: Roles self assigned via reaction or command are subject to
+the settings configured in the `roleset` command. 
+
+### RoomTools
+
+Provides two seperate ways to allow users to create temporary channels.
+
+For command based temporary voice channels, see the `tempchannelset` command
+
+For temporary channels generated automatically, see the `autoroomset` command
+
+
+### RSS
+
+Periodic RSS updates to channels.
+
+For more information, use `help RSS`
+
+
+### Scheduler
+
+Allows scheduling commands. 
+
+For more information, use `help Scheduler`
+
+
 
 ## Contact
 
@@ -15,3 +90,8 @@ Feel free to ask for help with these in [This Discord](https://discord.gg/mb85de
 
 If you'd like to see additional features or find a bug, leave an issue
 or make a pull request
+
+
+## What about the other cogs not listed here?
+
+Use at your own risk, they are disabled or hidden due to me not feeling they are ready for use.

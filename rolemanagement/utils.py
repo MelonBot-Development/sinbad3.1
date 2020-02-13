@@ -1,5 +1,9 @@
-import discord
+from __future__ import annotations
+
+import re
 from typing import List
+
+import discord
 
 from .abc import MixinMeta
 from .exceptions import (
@@ -8,11 +12,19 @@ from .exceptions import (
     PermissionOrHierarchyException,
 )
 
+variation_stripper_re = re.compile(r"[\ufe00-\ufe0f]")
+
 
 class UtilMixin(MixinMeta):
     """
     Mixin for utils, some of which need things stored in the class
     """
+
+    def strip_variations(self, s: str) -> str:
+        """
+        Normalizes emoji, removing variation selectors
+        """
+        return variation_stripper_re.sub("", s)
 
     async def update_roles_atomically(
         self,
@@ -45,15 +57,31 @@ class UtilMixin(MixinMeta):
         Quick heirarchy check on a role set in syntax returned
         """
         author = ctx.author
-        author_allowed = (
-            (ctx.guild.owner == author)
-            or all(ctx.author.top_role > role for role in roles)
+        guild = ctx.guild
+
+        # Author allowed
+        if not (
+            (guild.owner == author)
+            or all(author.top_role > role for role in roles)
             or await ctx.bot.is_owner(ctx.author)
-        )
-        bot_allowed = ctx.guild.me.guild_permissions.manage_roles and all(
-            ctx.guild.me.top_role > role for role in roles
-        )
-        return author_allowed and bot_allowed
+        ):
+            return False
+
+        # Bot allowed
+        if not (
+            guild.me.guild_permissions.manage_roles
+            and (
+                guild.me == guild.owner
+                or all(guild.me.top_role > role for role in roles)
+            )
+        ):
+            return False
+
+        # Sanity check on managed roles
+        if any(role.managed for role in roles):
+            return False
+
+        return True
 
     async def is_self_assign_eligible(
         self, who: discord.Member, role: discord.Role

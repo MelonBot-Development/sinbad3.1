@@ -1,3 +1,7 @@
+from __future__ import annotations
+
+from typing import NamedTuple
+
 from redbot.core import commands
 import discord
 from .helpers import find_messages, embed_from_msg
@@ -6,8 +10,11 @@ import re
 CHANNEL_RE = re.compile(r"^<#(\d{15,21})>$|^(\d{15,21})$")
 
 
-class GlobalChannel(commands.Converter):
-    async def convert(self, ctx, argument):
+class GlobalTextChannel(NamedTuple):
+    matched_channel: discord.TextChannel
+
+    @classmethod
+    async def convert(cls, ctx: commands.Context, argument: str):
 
         bot = ctx.bot
 
@@ -20,10 +27,10 @@ class GlobalChannel(commands.Converter):
                 channel_id = int(idx)
                 channel = bot.get_channel(channel_id)
 
-        if not channel or not isinstance(channel, discord.abc.Messageable):
+        if not channel or not isinstance(channel, discord.TextChannel):
             raise commands.BadArgument('Channel "{}" not found.'.format(argument))
 
-        return channel
+        return cls(channel)
 
 
 class QuoteTools(commands.Cog):
@@ -32,8 +39,11 @@ class QuoteTools(commands.Cog):
     """
 
     __author__ = "mikeshardmind(Sinbad)"
-    __version__ = "1.3.4"
-    __flavor_text__ = "Message jump links are go"
+    __version__ = "330.0.0"
+
+    def format_help_for_context(self, ctx):
+        pre_processed = super().format_help_for_context(ctx)
+        return f"{pre_processed}\nCog Version: {self.__version__}"
 
     def __init__(self, bot, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -41,7 +51,7 @@ class QuoteTools(commands.Cog):
 
     @commands.command()
     async def quote(
-        self, ctx, channels: commands.Greedy[GlobalChannel] = None, *messageids: int
+        self, ctx, channels: commands.Greedy[GlobalTextChannel] = None, *messageids: int
     ):
         """
         gets (a) message(s) by ID(s)
@@ -54,7 +64,9 @@ class QuoteTools(commands.Cog):
         if not messageids or not channels:
             return await ctx.send_help()
 
-        msgs = await find_messages(ctx, messageids, channels)
+        chans = [c.matched_channel for c in channels]
+
+        msgs = await find_messages(ctx, messageids, chans)
         if not msgs:
             return await ctx.maybe_send_embed("No matching message found.")
 
@@ -65,9 +77,9 @@ class QuoteTools(commands.Cog):
             else:
                 msg1 = "\n".join(
                     [
-                        "Author: {0}({0.id})".format(m.author),
-                        "Channel: {}".format(m.channel.mention),
-                        "Time(UTC): {}".format(m.created_at.isoformat()),
+                        f"Author: {m.author}({m.author.id})",
+                        f"Channel: <#{m.channel.id}>",
+                        f"Time(UTC): {m.created_at.isoformat()}",
                     ]
                 )
                 if len(msg1) + len(m.clean_content) < 2000:

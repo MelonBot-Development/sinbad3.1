@@ -1,5 +1,7 @@
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
-from typing import List
+from typing import List, Optional
 
 import discord
 from redbot.core import Config
@@ -18,6 +20,14 @@ class MixinMeta(ABC):
         self.bot: Red
 
     @abstractmethod
+    def strip_variations(self, s: str) -> str:
+        raise NotImplementedError()
+
+    @abstractmethod
+    async def wait_for_ready(self) -> None:
+        raise NotImplementedError()
+
+    @abstractmethod
     async def is_self_assign_eligible(
         self, who: discord.Member, role: discord.Role
     ) -> List[discord.Role]:
@@ -28,8 +38,8 @@ class MixinMeta(ABC):
         self,
         *,
         who: discord.Member,
-        give: List[discord.Role] = None,
-        remove: List[discord.Role] = None,
+        give: Optional[List[discord.Role]] = None,
+        remove: Optional[List[discord.Role]] = None,
     ):
         raise NotImplementedError()
 

@@ -1,7 +1,13 @@
 import argparse
 import shlex
-from redbot.core.commands import RoleConverter, Context, BadArgument
+from itertools import islice
+from typing import List, NamedTuple, Dict
+
+from redbot.core.commands import RoleConverter, Context, BadArgument, GuildContext
 import discord
+
+
+_RoleConverter = RoleConverter()
 
 
 class NoExitParser(argparse.ArgumentParser):
@@ -9,11 +15,11 @@ class NoExitParser(argparse.ArgumentParser):
         raise BadArgument()
 
 
-class RoleSyntaxConverter(RoleConverter):
-    def __init__(self):
-        super().__init__()
+class RoleSyntaxConverter(NamedTuple):
+    parsed: Dict[str, List[discord.Role]]
 
-    async def convert(self, ctx: Context, argument: str):
+    @classmethod
+    async def convert(cls, ctx: Context, argument: str):
         parser = NoExitParser(
             description="Role management syntax help", add_help=False, allow_abbrev=True
         )
@@ -28,15 +34,38 @@ class RoleSyntaxConverter(RoleConverter):
             raise BadArgument("Must provide at least one action")
 
         for attr in ("add", "remove"):
-            vals[attr] = [
-                await super(RoleSyntaxConverter, self).convert(ctx, r)
-                for r in vals[attr]
-            ]
+            vals[attr] = [await _RoleConverter.convert(ctx, r) for r in vals[attr]]
 
-        return vals
+        return cls(vals)
 
 
-class ComplexActionConverter(RoleConverter):
+class EmojiRolePairConverter(NamedTuple):
+    pairs: Dict[str, discord.Role]
+
+    @classmethod
+    async def convert(cls, ctx: GuildContext, argument: str):
+
+        chunks = shlex.split(argument)
+        if not chunks:
+            raise BadArgument("Must provide at least one pair.")
+        if len(chunks) % 2:
+            raise BadArgument("Must provide pairings of emojis to roles.")
+
+        pairs: Dict[str, discord.Role] = {}
+
+        for maybe_emoji, maybe_role in islice(chunks, None, None, 2):
+
+            if maybe_emoji in pairs:
+                raise BadArgument("You can't provide the same emoji multiple times.")
+
+            role = await _RoleConverter.convert(ctx, maybe_role)
+
+            pairs[maybe_emoji] = role
+
+        return cls(pairs)
+
+
+class ComplexActionConverter(NamedTuple):
     """
     --has-all roles
     --has-none roles
@@ -57,10 +86,10 @@ class ComplexActionConverter(RoleConverter):
     --everyone
     """
 
-    def __init__(self):
-        super().__init__()
+    parsed: dict
 
-    async def convert(self, ctx: Context, argument: str) -> dict:
+    @classmethod
+    async def convert(cls, ctx: Context, argument: str):
 
         parser = NoExitParser(description="Role management syntax help", add_help=False)
         parser.add_argument("--has-any", nargs="*", dest="any", default=[])
@@ -120,17 +149,12 @@ class ComplexActionConverter(RoleConverter):
             raise BadArgument("You need to provide at least 1 search criterion")
 
         for attr in ("any", "all", "none", "add", "remove"):
-            vals[attr] = [
-                await super(ComplexActionConverter, self).convert(ctx, r)
-                for r in vals[attr]
-            ]
+            vals[attr] = [await _RoleConverter.convert(ctx, r) for r in vals[attr]]
 
         for attr in ("below", "above"):
             if vals[attr] is None:
                 continue
-            vals[attr] = await super(ComplexActionConverter, self).convert(
-                ctx, vals[attr]
-            )
+            vals[attr] = await _RoleConverter.convert(ctx, vals[attr])
 
         for attr in ("hasperm", "anyperm", "notperm"):
 
@@ -141,10 +165,10 @@ class ComplexActionConverter(RoleConverter):
             if any(perm not in dir(discord.Permissions) for perm in vals[attr]):
                 raise BadArgument("You gave an invalid permission")
 
-        return vals
+        return cls(vals)
 
 
-class ComplexSearchConverter(RoleConverter):
+class ComplexSearchConverter(NamedTuple):
     """
     --has-all roles
     --has-none roles
@@ -164,10 +188,10 @@ class ComplexSearchConverter(RoleConverter):
     --csv
     """
 
-    def __init__(self):
-        super().__init__()
+    parsed: dict
 
-    async def convert(self, ctx: Context, argument: str) -> dict:
+    @classmethod
+    async def convert(cls, ctx: Context, argument: str):
         parser = NoExitParser(description="Role management syntax help", add_help=False)
         parser.add_argument("--has-any", nargs="*", dest="any", default=[])
         parser.add_argument("--has-all", nargs="*", dest="all", default=[])
@@ -223,17 +247,12 @@ class ComplexSearchConverter(RoleConverter):
             raise BadArgument("You need to provide at least 1 search criterion")
 
         for attr in ("any", "all", "none"):
-            vals[attr] = [
-                await super(ComplexSearchConverter, self).convert(ctx, r)
-                for r in vals[attr]
-            ]
+            vals[attr] = [await _RoleConverter.convert(ctx, r) for r in vals[attr]]
 
         for attr in ("below", "above"):
             if vals[attr] is None:
                 continue
-            vals[attr] = await super(ComplexSearchConverter, self).convert(
-                ctx, vals[attr]
-            )
+            vals[attr] = await _RoleConverter.convert(ctx, vals[attr])
 
         for attr in ("hasperm", "anyperm", "notperm"):
 
@@ -244,4 +263,4 @@ class ComplexSearchConverter(RoleConverter):
             if any(perm not in dir(discord.Permissions) for perm in vals[attr]):
                 raise BadArgument("You gave an invalid permission")
 
-        return vals
+        return cls(vals)
