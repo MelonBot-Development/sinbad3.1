@@ -1,7 +1,7 @@
 from .core import RoleManagement
 
 
-def setup(bot):
+async def setup(bot):
     cog = RoleManagement(bot)
-    bot.add_cog(cog)
+    await bot.add_cog(cog)
     cog.init()
