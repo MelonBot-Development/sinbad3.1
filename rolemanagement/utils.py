@@ -150,4 +150,5 @@ class UtilMixin(MixinMeta):
     async def maybe_update_guilds(self, *guilds: discord.Guild):
         _guilds = [g for g in guilds if not g.unavailable and g.large and not g.chunked]
         if _guilds:
-            await self.bot.request_offline_members(*_guilds)
+            for guild in _guilds:
+                await guild.chunk(cache=True)
